@@ -1,6 +1,6 @@
 import java.util.concurrent.Executors
-import scala.concurrent.Future
-import scala.util.{Success, Try}
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Success, Try, Failure}
 
 object ScalaRecap {
 
@@ -65,10 +65,10 @@ object ScalaRecap {
     } yield (n, c) // same
 
     // options and try
-    val anOption: Option[Int] = Option(/** something that might be null **/)
+    val anOption: Option[Int] = Option(/** something that might be null **/43)
     val doubleOption = anOption.map(_ * 2)
 
-    val anAttempt: Try = Try(12)
+    val anAttempt: Try[Int] = Try(12)
     val modifiedAttempt = anAttempt.map(_ * 10)
 
   // pattern matching
