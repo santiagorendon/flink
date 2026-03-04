@@ -5,10 +5,11 @@ import org.apache.flink.api.common.eventtime.TimestampAssignerSupplier.SupplierF
 import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, TimestampAssigner, TimestampAssignerSupplier, WatermarkStrategy}
 import org.apache.flink.api.common.functions.AggregateFunction
 import org.apache.flink.streaming.api.scala._
-import org.apache.flink.streaming.api.scala.function.{AllWindowFunction, ProcessAllWindowFunction}
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows
+import org.apache.flink.streaming.api.scala.function.{AllWindowFunction, ProcessAllWindowFunction, ProcessWindowFunction, WindowFunction}
+import org.apache.flink.streaming.api.windowing.assigners.{EventTimeSessionWindows, GlobalWindows, SlidingEventTimeWindows, TumblingEventTimeWindows}
 import org.apache.flink.streaming.api.windowing.time.Time
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow
+import org.apache.flink.streaming.api.windowing.triggers.CountTrigger
+import org.apache.flink.streaming.api.windowing.windows.{GlobalWindow, TimeWindow}
 import org.apache.flink.util.Collector
 import part2datastreams.WindowFunctions.serverStartTime
 
@@ -108,9 +109,129 @@ object WindowFunctions {
     env.execute()
   }
 
+  /**
+   * keyed stream and window functions
+   *
+   */
+    // each element will be assigned to a 'mini-stream' for its own key
+    // one task processes all the data for a particular key
+    val streamByType: KeyedStream[ServerEvent, String] = eventStream.keyBy(e => e.getClass.getSimpleName)
 
+    // for every key, we will a separate window for it
+    val threeSecondsTumblingWindowsByType = streamByType.window(TumblingEventTimeWindows.of(Time.seconds(3)))
+
+    class CountByWindow extends WindowFunction[ServerEvent, String, String, TimeWindow] {
+      //                                       ^ input     ^ key    ^ output  ^ window type
+
+      override def apply(key: String, window: TimeWindow, input: Iterable[ServerEvent], out: Collector[String]): Unit =
+        out.collect(s"$key: $window, ${input.size}")
+    }
+
+    def demoCountByTypeByWindow(): Unit = {
+      val finalStream = threeSecondsTumblingWindowsByType.apply(new CountByWindow)
+      finalStream.print()
+      env.execute()
+    }
+
+    // alternative - process function for windows with key by
+    class CountByWindowV2 extends ProcessWindowFunction[ServerEvent, String, String, TimeWindow] {
+      //                                                ^ input       ^ key ^ output.^ window type
+      // context gives access to extra flink apis
+      override def process(key: String, context: Context, elements: Iterable[ServerEvent], out: Collector[String]): Unit =
+        out.collect(s"$key: ${context.window}, ${elements.size}")
+    }
+
+    def demoCountByTypeByWindow_v2(): Unit = {
+      val finalStream = threeSecondsTumblingWindowsByType.process(new CountByWindowV2)
+      finalStream.print()
+      env.execute()
+    }
+
+    /**
+     * Sliding Windows
+     */
+
+    // how many players were registered every 3 seconds, Updated Every 1s?
+    // [0s...3s] [1s...4s] [2s...5s] [3s...6s] [4s...7s] [5s...8s] [6s...9s]
+    def demoSlidingAllWindows(): Unit = {
+      val windowSize: Time = Time.seconds(3)
+      val slidingTime: Time = Time.seconds(1)
+      val slidingWindowAll = eventStream.windowAll(SlidingEventTimeWindows.of(windowSize, slidingTime))
+
+      // process the windowed stream with similar window functions
+      val registrationCountByWindow = slidingWindowAll.apply(new CountByWindowAll)
+
+      // similar to the other example
+      registrationCountByWindow.print()
+      env.execute()
+    }
+
+  /**
+   * Session Windows - group of events with no more that a certain time gap in between them
+   */
+    // how many registration events do we have no more than 1 second apart
+
+    def demoSessionWindows(): Unit = {
+      val groupBySessionWindows = eventStream.windowAll(EventTimeSessionWindows.withGap(Time.seconds(1)))
+
+      // operate any kind of window function
+      val countBySession = groupBySessionWindows.apply(new CountByWindowAll)
+
+      // same as things before
+      countBySession.print()
+      env.execute()
+    }
+
+  /** Global window functions */
+    // how many registration events do we have every 10 events (not concerning time)
+
+  // count by windowAll
+  class CountByGlobalWindowAll extends AllWindowFunction[ServerEvent, String, GlobalWindow] {
+    //                                             ^ input      ^ output  ^ window type
+    override def apply(window: GlobalWindow, input: Iterable[ServerEvent], out: Collector[String]): Unit = {
+      val registrationEventCount = input.count(event => event.isInstanceOf[PlayerRegistered])
+      out.collect(s"Window [${window}] $registrationEventCount")
+    }
+  }
+
+
+  def demoGlobalWindow(): Unit = {
+      val globalWindowEvents = eventStream.windowAll(GlobalWindows.create())
+        .trigger(CountTrigger.of[GlobalWindow](10))
+        .apply(new CountByGlobalWindowAll) // not compatible with countbywindow all since window type is different now
+      globalWindowEvents.print()
+    env.execute()
+  }
+
+  /**
+   * Exercise - what was the time window (continout 2s) when we had THE MOST registration events?
+   *
+   * */
+
+    class CountRegistrationsByWindow() extends AllWindowFunction[ServerEvent, (TimeWindow, Int), TimeWindow] {
+
+      override def apply(window: TimeWindow, input: Iterable[ServerEvent], out: Collector[(TimeWindow, Int)]): Unit = {
+        val registrationEventCount = input.count(event => event.isInstanceOf[PlayerRegistered])
+        out.collect(window, registrationEventCount)
+      }
+    }
+
+    def exercise(): Unit = {
+      val windowSize: Time = Time.seconds(2)
+      val slidingTime: Time = Time.seconds(1)
+      val slidingWindowAll = eventStream.windowAll(SlidingEventTimeWindows.of(windowSize, slidingTime))
+      val resultStream = slidingWindowAll.apply(new CountRegistrationsByWindow)
+
+      val resultCollection = resultStream.executeAndCollect()
+
+      val max: (TimeWindow, Int) = resultCollection.max((a: (TimeWindow, Int) ,b: (TimeWindow, Int)) => a._2.compare(b._2))
+
+      println(max)
+
+      env.execute()
+    }
 
   def main(args: Array[String]): Unit = {
-    demoCountbyWindow_v3()
+    exercise()
   }
 }
