@@ -1,6 +1,6 @@
 package part2datastreams
 
-import generators.gaming.{PlayerRegistered, ServerEvent, alice, bob, carl, mary, rob, sam}
+import generators.gaming.{PlayerRegistered, ShoppingCartEvent, alice, bob, carl, mary, rob, sam}
 import org.apache.flink.api.common.eventtime.TimestampAssignerSupplier.SupplierFromSerializableTimestampAssigner
 import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, TimestampAssigner, TimestampAssignerSupplier, WatermarkStrategy}
 import org.apache.flink.api.common.functions.AggregateFunction
@@ -21,7 +21,7 @@ object WindowFunctions {
 
   val env = StreamExecutionEnvironment.getExecutionEnvironment
   implicit val serverStartTime: Instant = Instant.parse("2022-02-02T00:00:00.000Z")
-  val events: List[ServerEvent] = List(
+  val events: List[ShoppingCartEvent] = List(
     bob.register(2.seconds), // player "Bob" registered 2s after server started
     bob.online(2.seconds),
     sam.register(3.seconds),
@@ -36,13 +36,13 @@ object WindowFunctions {
     carl.online(10.seconds)
   )
 
-  val eventStream: DataStream[ServerEvent] = env
+  val eventStream: DataStream[ShoppingCartEvent] = env
     .fromCollection(events)
     .assignTimestampsAndWatermarks( // extract timestamps for events (event time) + watermarks
       WatermarkStrategy
         .forBoundedOutOfOrderness(java.time.Duration.ofMillis(500)) // once you get an event with time T, you will not accept further events with time T - 500
-        .withTimestampAssigner(new SerializableTimestampAssigner[ServerEvent] {
-          override def extractTimestamp(element: ServerEvent, recordTimestamp: Long): Long =
+        .withTimestampAssigner(new SerializableTimestampAssigner[ShoppingCartEvent] {
+          override def extractTimestamp(element: ShoppingCartEvent, recordTimestamp: Long): Long =
             element.eventTime.toEpochMilli
         })
     )
@@ -53,9 +53,9 @@ object WindowFunctions {
 
 
   // count by windowAll
-  class CountByWindowAll extends AllWindowFunction[ServerEvent, String, TimeWindow] {
+  class CountByWindowAll extends AllWindowFunction[ShoppingCartEvent, String, TimeWindow] {
     //                                             ^ input      ^ output  ^ window type
-    override def apply(window: TimeWindow, input: Iterable[ServerEvent], out: Collector[String]): Unit = {
+    override def apply(window: TimeWindow, input: Iterable[ShoppingCartEvent], out: Collector[String]): Unit = {
       val registrationEventCount = input.count(event => event.isInstanceOf[PlayerRegistered])
       out.collect(s"Window [${window.getStart} - ${window.getEnd}] $registrationEventCount")
     }
@@ -68,9 +68,9 @@ object WindowFunctions {
   }
 
   // alternative: process window function which offers a much richer API (lower level)
-  class CountByWindowAllV2 extends ProcessAllWindowFunction[ServerEvent, String, TimeWindow] {
+  class CountByWindowAllV2 extends ProcessAllWindowFunction[ShoppingCartEvent, String, TimeWindow] {
     // this has context as first parameter instead of window which is more richer data structure which has more flink internal apis for access
-    override def process(context: Context, elements: Iterable[ServerEvent], out: Collector[String]): Unit = {
+    override def process(context: Context, elements: Iterable[ShoppingCartEvent], out: Collector[String]): Unit = {
       val window = context.window
       val registrationEventCount = elements.count(event => event.isInstanceOf[PlayerRegistered])
       out.collect(s"Window [${window.getStart} - ${window.getEnd}] $registrationEventCount")
@@ -85,14 +85,14 @@ object WindowFunctions {
   }
 
   // alternative 2: aggregate function
-  class CountByWindowV3 extends AggregateFunction[ServerEvent, Long, Long] {
+  class CountByWindowV3 extends AggregateFunction[ShoppingCartEvent, Long, Long] {
     //                                              ^ input      ^ acc ^ output
 
     // start counting from 0
     override def createAccumulator(): Long = 0L
 
     // every element increases accumulator by 1
-    override def add(value: ServerEvent, accumulator: Long): Long =
+    override def add(value: ShoppingCartEvent, accumulator: Long): Long =
       if (value.isInstanceOf[PlayerRegistered]) accumulator + 1
       else accumulator
 
@@ -115,15 +115,15 @@ object WindowFunctions {
    */
     // each element will be assigned to a 'mini-stream' for its own key
     // one task processes all the data for a particular key
-    val streamByType: KeyedStream[ServerEvent, String] = eventStream.keyBy(e => e.getClass.getSimpleName)
+    val streamByType: KeyedStream[ShoppingCartEvent, String] = eventStream.keyBy(e => e.getClass.getSimpleName)
 
     // for every key, we will a separate window for it
     val threeSecondsTumblingWindowsByType = streamByType.window(TumblingEventTimeWindows.of(Time.seconds(3)))
 
-    class CountByWindow extends WindowFunction[ServerEvent, String, String, TimeWindow] {
+    class CountByWindow extends WindowFunction[ShoppingCartEvent, String, String, TimeWindow] {
       //                                       ^ input     ^ key    ^ output  ^ window type
 
-      override def apply(key: String, window: TimeWindow, input: Iterable[ServerEvent], out: Collector[String]): Unit =
+      override def apply(key: String, window: TimeWindow, input: Iterable[ShoppingCartEvent], out: Collector[String]): Unit =
         out.collect(s"$key: $window, ${input.size}")
     }
 
@@ -134,10 +134,10 @@ object WindowFunctions {
     }
 
     // alternative - process function for windows with key by
-    class CountByWindowV2 extends ProcessWindowFunction[ServerEvent, String, String, TimeWindow] {
+    class CountByWindowV2 extends ProcessWindowFunction[ShoppingCartEvent, String, String, TimeWindow] {
       //                                                ^ input       ^ key ^ output.^ window type
       // context gives access to extra flink apis
-      override def process(key: String, context: Context, elements: Iterable[ServerEvent], out: Collector[String]): Unit =
+      override def process(key: String, context: Context, elements: Iterable[ShoppingCartEvent], out: Collector[String]): Unit =
         out.collect(s"$key: ${context.window}, ${elements.size}")
     }
 
@@ -186,9 +186,9 @@ object WindowFunctions {
     // how many registration events do we have every 10 events (not concerning time)
 
   // count by windowAll
-  class CountByGlobalWindowAll extends AllWindowFunction[ServerEvent, String, GlobalWindow] {
+  class CountByGlobalWindowAll extends AllWindowFunction[ShoppingCartEvent, String, GlobalWindow] {
     //                                             ^ input      ^ output  ^ window type
-    override def apply(window: GlobalWindow, input: Iterable[ServerEvent], out: Collector[String]): Unit = {
+    override def apply(window: GlobalWindow, input: Iterable[ShoppingCartEvent], out: Collector[String]): Unit = {
       val registrationEventCount = input.count(event => event.isInstanceOf[PlayerRegistered])
       out.collect(s"Window [${window}] $registrationEventCount")
     }
@@ -208,9 +208,9 @@ object WindowFunctions {
    *
    * */
 
-    class CountRegistrationsByWindow() extends AllWindowFunction[ServerEvent, (TimeWindow, Int), TimeWindow] {
+    class CountRegistrationsByWindow() extends AllWindowFunction[ShoppingCartEvent, (TimeWindow, Int), TimeWindow] {
 
-      override def apply(window: TimeWindow, input: Iterable[ServerEvent], out: Collector[(TimeWindow, Int)]): Unit = {
+      override def apply(window: TimeWindow, input: Iterable[ShoppingCartEvent], out: Collector[(TimeWindow, Int)]): Unit = {
         val registrationEventCount = input.count(event => event.isInstanceOf[PlayerRegistered])
         out.collect(window, registrationEventCount)
       }
